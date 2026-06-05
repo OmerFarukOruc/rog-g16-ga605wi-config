@@ -8,15 +8,15 @@
 
 ## TL;DR — Current State (read first)
 
-- **Daily driver = Hybrid mode + `prime-run`.** This is the supported, stable setup. Internal panel on AMD; run apps on the dGPU with `prime-run <app>`.
-- **External monitor is auto-accelerated.** The boot script promotes NVIDIA to KWin's compositor when an external display is connected to it (HDMI/DP route to the dGPU) — fixes the cross-GPU lag. Falls back to AMD (battery-saving) when undocked. See [External-Monitor Lag Fix](#external-monitor-lag-fix-nvidia-primary-compositing).
-- **dGPU-only (`AsusMuxDgpu`) mode = DEAD END under Wayland.** Black-screens the internal panel. Root cause not in config — colour pipeline, HDR/WCG all ruled out. **Do not use it.** See [Resolved: dGPU Black Screen](#resolved-dgpu-only-mode-black-screen-under-wayland).
-- **Mostly on AC, docked, external monitor.** RTD3 power management is correct and unchanged.
+- **Daily driver = Hybrid mode with KWin compositing on the NVIDIA dGPU, persistently.** The boot service `kwin-nvidia-primary.service` writes `KWIN_DRM_DEVICES=<nvidia>:<amd>` for every login, so the whole desktop renders on the dGPU → lag-free everywhere (especially the external/dock display). `prime-run` still works for explicit per-app offload.
+- **Trade-off:** the dGPU never RTD3-sleeps under this setup (a few extra watts, worse battery undocked; reverse iGPU copy for the internal panel). Fine on AC/dock. A "only when docked" variant (battery-friendly when mobile) is noted in `kwin-nvidia-primary.sh` and in [The Boot Script](#the-boot-script-kwin-nvidia-primarysh).
+- **dGPU-only (`AsusMuxDgpu`) mode = DEAD END under Wayland.** Black-screens the internal panel. Proven below-the-compositor (nvidia-open eDP scanout) — userspace exonerated. **Do not use it.** See [Resolved: dGPU Black Screen](#resolved-dgpu-only-mode-black-screen-under-wayland).
+- **Mostly on AC, docked, external monitor.** RTD3 config is correct and unchanged.
 - If a GPU mode switch ever black-screens you: [Recovery](#recovery-procedures) → Windows GHelper "Enable Hybrid", or SSH.
 
 | Mode | Status | When to use |
 |------|--------|-------------|
-| **Hybrid** | ✅ daily driver | Always. `prime-run` for dGPU apps; auto nvidia-primary for external monitor. |
+| **Hybrid + nvidia-primary KWin** | ✅ daily driver | Always. Whole desktop on the dGPU; `prime-run` for explicit offload. |
 | **Integrated** | ✅ works | Max battery (dGPU fully off). |
 | **AsusMuxDgpu (dGPU-only)** | ❌ black-screens under Wayland | Don't. X11-only; not worth losing HDR/240 Hz. |
 
@@ -49,8 +49,8 @@
 |------|---------|
 | `/etc/modprobe.d/nvidia.conf` | NVIDIA module options (modeset, fbdev, color_pipeline, power mgmt) |
 | `/etc/supergfxd.conf` | supergfxctl persisted mode |
-| `/usr/local/bin/gpu-mux-kwin-fix.sh` | **Boot script** — sets `KWIN_DRM_DEVICES` per mode (the core of this setup) |
-| `/etc/systemd/system/gpu-mux-kwin-fix.service` | Runs the script before `plasmalogin` |
+| `/usr/local/bin/kwin-nvidia-primary.sh` | **Boot script** — writes nvidia-primary `KWIN_DRM_DEVICES` (the core of this setup) |
+| `/etc/systemd/system/kwin-nvidia-primary.service` | Runs the script before `plasmalogin` |
 | `~/.config/environment.d/kwin-hdr.conf` | `KWIN_FORCE_ASSUME_HDR_SUPPORT=1` |
 | `~/.config/environment.d/kwin-drm.conf` | **Auto-managed by the boot script** — never edit by hand |
 | `/etc/mkinitcpio.conf` | `MODULES=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)` |
@@ -80,32 +80,19 @@ quiet nowatchdog splash rw rootflags=subvol=/@ nvidia-drm.modeset=1 modprobe.bla
 
 ---
 
-## The Boot Script: `gpu-mux-kwin-fix.sh`
+## The Boot Script: `kwin-nvidia-primary.sh`
 
-**Runs** before `plasmalogin.service`, after `supergfxd.service`. Detects GPUs **by vendor ID** every boot (cardN numbers are unstable — never hardcode them) and writes `KWIN_DRM_DEVICES` to `~/.config/environment.d/kwin-drm.conf` for each real user **and** the `plasmalogin` greeter.
+**Runs** before `plasmalogin.service`, after `supergfxd.service`. Detects GPUs **by vendor ID** every boot (cardN numbers are unstable — never hardcode them; `/dev/dri/by-path` can't be used because `KWIN_DRM_DEVICES` splits on `:` and PCI paths contain colons) and writes, for every real user **and** the `plasmalogin` greeter:
 
-| Mode (MUX + supergfxctl) | `KWIN_DRM_DEVICES` written | Why |
-|--------------------------|---------------------------|-----|
-| **MUX=0 (dGPU-only)** | `<nvidia>` (nvidia only) | Single card; avoid KWin choking on the AMD card. *(dGPU-only still black-screens — see resolved section.)* |
-| **MUX=1 + Integrated** | `<amd>` (amd only) | Hide the powered-off dGPU so KWin doesn't crash on it. |
-| **MUX=1 + Hybrid, external display on NVIDIA** | `<nvidia>:<amd>` + `KWIN_DRM_ALLOW_NVIDIA_COLORSPACE=1` | NVIDIA composites → no cross-GPU copy lag on the external monitor. |
-| **MUX=1 + Hybrid, internal panel only** | (override removed) | KWin auto-detects AMD; RTD3 can sleep the dGPU → battery. |
-
-**Hotplug caveat:** the external-display check happens at **boot**. If you dock *after* boot, log out/in (or restart the service) to pick up nvidia-primary. A full udev hotplug hook would be the only way to make it instant — not implemented.
-
-<details><summary><b>Full script source (rev 2026-06-05)</b></summary>
-
-```bash
-# See /usr/local/bin/gpu-mux-kwin-fix.sh on the machine for the authoritative copy.
-# Key logic:
-#  - detect NVIDIA (0x10de) / AMD (0x1002) cards by vendor ID
-#  - NVIDIA_EXTERNAL=1 if a non-eDP connector on the nvidia card is "connected"
-#  - MUX=0 -> KWIN_DRM_DEVICES=<nvidia>
-#  - Integrated -> KWIN_DRM_DEVICES=<amd>
-#  - Hybrid + NVIDIA_EXTERNAL -> KWIN_DRM_DEVICES=<nvidia>:<amd> + KWIN_DRM_ALLOW_NVIDIA_COLORSPACE=1
-#  - Hybrid + internal-only -> remove override
 ```
-</details>
+~/.config/environment.d/kwin-drm.conf
+  KWIN_DRM_DEVICES=<nvidia>:<amd>          # nvidia first = KWin compositor primary
+  KWIN_DRM_ALLOW_NVIDIA_COLORSPACE=1       # keeps HDR/colorspace working on nvidia
+```
+
+This makes KWin composite the whole desktop on the dGPU — **always**, in Hybrid. NVIDIA drives any external/dock display natively (no cross-GPU copy) and the internal panel via the AMD secondary. Apply with a logout/login; `setup.sh` runs the script once on install so a relogin is enough.
+
+**"Only when docked" variant** (battery-friendly when mobile): gate the write on a connected non-eDP connector existing on the nvidia card, and remove the override otherwise so the iGPU composites and RTD3 can sleep the dGPU. That was the earlier auto-conditional behaviour (when the script was `gpu-mux-kwin-fix.sh`); the current default is always-on by preference. Hotplug caveat either way: detection is at boot/login — dock *after* boot → log out/in.
 
 ---
 
@@ -117,7 +104,7 @@ quiet nowatchdog splash rw rootflags=subvol=/@ nvidia-drm.modeset=1 modprobe.bla
 
 **Fix:** make NVIDIA KWin's primary compositor via `KWIN_DRM_DEVICES=<nvidia>:<amd>` (nvidia first) + `KWIN_DRM_ALLOW_NVIDIA_COLORSPACE=1` (keeps HDR working). NVIDIA then drives the external natively (no copy) and composites everything. **Confirmed smooth.**
 
-This is now **automatic** via the boot script — applied only when an external display is on the dGPU, so it doesn't waste battery when mobile. **Power is "free" when docked:** the dGPU is already awake driving the external monitor (RTD3 can't sleep a GPU that's driving a display), so moving compositing onto it costs ~nothing.
+This is now **always on** via `kwin-nvidia-primary.service` (persistent nvidia-primary compositing) — see [The Boot Script](#the-boot-script-kwin-nvidia-primarysh). **Power is "free" when docked** (the dGPU is already awake driving the external monitor); the only real cost is undocked/internal-only, where the dGPU now stays awake for compositing instead of RTD3-sleeping.
 
 - Requires a **logout/login** (or reboot) to take effect — `KWIN_DRM_DEVICES` is read at session start.
 - Verify it's active: `tr '\0' '\n' < /proc/$(pgrep -x kwin_wayland|head -1)/environ | grep KWIN_DRM`
@@ -171,6 +158,8 @@ sudo supergfxctl -m AsusMuxDgpu && sudo reboot   # will black-screen; recover vi
 - **Boot-script hang on `supergfxctl --get`** (separate bug that masked the real symptom in pre-2026-06-05 reproductions; `multi-user.target` was wedged so KWin never started) — fixed in commit 956b292 (`timeout 5` wrapper). With the fix, every dGPU boot now reaches `graphical.target` cleanly and `gpu-dgpu-guard` actually fires.
 - **"KWin never presents" hypothesis** — **disproved 2026-06-05** with verbose KWin logging (`QT_LOGGING_RULES=kwin.*=true;qt.qpa.*=true` + `WAYLAND_DEBUG=server` injected into the boot script's MUX=0 branch). KWin runs the full pipeline.
 - **`KWIN_FORCE_SW_CURSOR=1`** (hardware-cursor regression suspicion, from KDE Bug 517987 / Arch BBS 310531) — disproved 2026-06-05. With SW cursor set, DRM debugfs confirms cursor plane[58] detaches (`crtc=(null), fb=0`) and only the primary plane[53] (2560×1600 ABGR2101010) stays attached to crtc-0. Panel is still black. So hardware-cursor / multi-GPU GL-framebuffer regression from 517987 is not the cause on this path — that was a different upstream bug already fixed in 6.6.5.
+- **`KWIN_DRM_NO_AMS=1`** (legacy DRM modeset instead of atomic) — *untested on hardware.* Listed for completeness only: both the atomic and legacy paths go through `nvidia-drm`, and the verbose log already exonerates userspace, so it is not expected to change a below-the-compositor eDP-scanout bug.
+- **Switching tool is irrelevant.** `supergfxctl -m AsusMuxDgpu` reliably flips the MUX on this box; `asusctl armoury set gpu_mux_mode 0` is flaky here ("Multiple asusd interfaces devices found" — `supergfxd` + `asusd` both claim the GPU interface, the two-manager conflict asus-linux warns about). Both write the same firmware bit; neither affects the black screen.
 
 ### What KWin actually does in dGPU mode (verbose-logged, 2026-06-05)
 
