@@ -246,7 +246,7 @@ nvidia-smi                                       # dGPU state + processes (Disp.
 cat /proc/driver/nvidia/gpus/*/power             # RTD3 status
 kscreen-doctor -o | grep -iE 'Output|enabled|HDR|priority'   # KDE outputs + HDR
 tr '\0' '\n' < /proc/$(pgrep -x kwin_wayland|head -1)/environ | grep KWIN_DRM  # is override active?
-journalctl -b | grep gpu-mux-kwin-fix            # boot script log
+journalctl -b -u kwin-nvidia-primary             # boot script log
 journalctl -b -u plasma-login-kwin_wayland       # greeter KWin log (truncates on black screen)
 ```
 
