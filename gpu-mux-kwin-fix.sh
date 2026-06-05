@@ -15,11 +15,19 @@
 # Hotplug caveat: detection happens at boot. If you dock AFTER boot, log out/in to pick up
 # nvidia-primary (or re-run this service).
 
-MUX_MODE_FILE="/sys/bus/platform/drivers/asus-nb-wmi/asus-nb-wmi/gpu_mux_mode"
-if [ ! -f "$MUX_MODE_FILE" ]; then
-    MUX_MODE_FILE=$(ls /sys/bus/platform/drivers/asus-nb-wmi/*/gpu_mux_mode 2>/dev/null | head -1)
-fi
+# Resolve the ASUS GPU MUX sysfs file across kernel/firmware path variants.
+find_mux_file() {
+    local path
+    for path in \
+        /sys/devices/platform/asus-nb-wmi/gpu_mux_mode \
+        /sys/bus/platform/drivers/asus-nb-wmi/asus-nb-wmi/gpu_mux_mode \
+        /sys/bus/platform/drivers/asus-nb-wmi/*/gpu_mux_mode; do
+        [ -f "$path" ] && { printf '%s\n' "$path"; return 0; }
+    done
+    return 1
+}
 
+MUX_MODE_FILE=$(find_mux_file || true)
 if [ -z "$MUX_MODE_FILE" ] || [ ! -f "$MUX_MODE_FILE" ]; then
     echo "gpu-mux-kwin-fix: No gpu_mux_mode found, skipping"
     exit 0
