@@ -4,7 +4,7 @@
 # to confirm the screen works (sudo touch /run/dgpu-keep). If no confirmation,
 # it captures diagnostics and reverts to Hybrid + reboots, so a black screen
 # self-recovers without SSH or Windows. Disarms itself after acting once.
-WINDOW=300
+WINDOW=120
 
 # Resolve the ASUS GPU MUX sysfs file across kernel/firmware path variants.
 find_mux_file() {
