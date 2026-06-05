@@ -1,43 +1,43 @@
-# ROG Zephyrus G16 GA605WI — GPU scripts & reference
+# ROG Zephyrus G16 GA605WI — GPU & KWin config
 
-Persistent home for the GPU-mode scripts and the reference doc.
-Laptop: ROG Zephyrus G16 GA605WI (Ryzen AI 9 HX 370 + RTX 4070), CachyOS, KDE Plasma Wayland.
+Persistent **NVIDIA-primary KWin compositing** for this laptop, plus the full GPU reference.
+**ASUS ROG Zephyrus G16 GA605WI** (Ryzen AI 9 HX 370 + RTX 4070), CachyOS, KDE Plasma Wayland.
+
+## What this does
+
+Runs the KDE Plasma desktop with **KWin compositing on the NVIDIA dGPU**, persistently, in **Hybrid** mode — for a lag-free desktop (especially on an external/dock display). No MUX switching, no reboot-to-switch, no manual session picker.
+
+A small boot service writes `KWIN_DRM_DEVICES=<nvidia>:<amd>` (nvidia = compositor primary) into `environment.d` before login. It resolves the cards by **PCI vendor ID** because `/dev/dri/cardN` renumbers between boots, and `/dev/dri/by-path` can't be used — its `:` collides with the `:` separator in `KWIN_DRM_DEVICES`.
 
 ## Files
 
 | File | Installs to | Purpose |
 |---|---|---|
-| `gpu-mux-kwin-fix.sh` | `/usr/local/bin/` | Boot script: sets `KWIN_DRM_DEVICES` per GPU mode. dGPU→nvidia-only, Integrated→amd-only, Hybrid+external-on-nvidia→nvidia:amd (lag fix), Hybrid internal-only→no override. Runs before the display manager via `gpu-mux-kwin-fix.service`. |
-| `gpu-dgpu-diag.sh` | `/usr/local/bin/` | Dumps GPU/display diagnostics to `/var/log/gpu-dgpu-diag-latest.log` (connector status, EDID bytes, drm_info, nvidia-smi, kwin environ, journal tail). |
-| `gpu-dgpu-guard.sh` | `/usr/local/bin/` | Dead-man's switch for testing dGPU mode. Only arms when MUX=0. Waits 5 min for `/run/dgpu-keep`; if absent, captures diagnostics and auto-reverts to Hybrid + reboot. Self-disables after acting once. |
-| `gpu-mux-kwin-fix.service` | `/etc/systemd/system/` | systemd unit that runs the boot script before the display manager (`Before=plasmalogin/display-manager`, `After=supergfxd`). |
-| `gpu-dgpu-guard.service` | `/etc/systemd/system/` | systemd unit for the guard. `TimeoutStartSec=infinity` so the 5-min wait isn't killed. |
-| `gpu-dgpu-setup.sh` | run in place | One-shot installer for the scripts + both services above. Installs from its own directory (this repo) and enables `gpu-mux-kwin-fix.service` + arms the guard. |
-| `rog-laptop-gpu-reference.md` | — | Full GPU reference: current state, config files, recovery, lessons. |
-| `ghelper-linux-migration.md` | — | Power/thermal/fan/RGB control reference; g-helper → asusctl migration. |
+| `kwin-nvidia-primary.sh` | `/usr/local/bin/` | Boot script: writes nvidia-primary `KWIN_DRM_DEVICES` for all real users + the `plasmalogin` greeter |
+| `kwin-nvidia-primary.service` | `/etc/systemd/system/` | Runs the script before the display manager |
+| `setup.sh` | run in place | Installs the two files, removes the old dGPU test harness, applies immediately |
+| `rog-laptop-gpu-reference.md` | — | Full GPU reference: config, RTD3, recovery, the dGPU-dead-end investigation |
+| `ghelper-linux-migration.md` | — | Power/thermal/fan/RGB reference (g-helper → asusctl migration) |
 
-## Test dGPU-only mode (the open problem)
+## Install
 
 ```bash
-# 1. install scripts + services, enable boot service, arm the guard
-sudo bash gpu-dgpu-setup.sh
-# 2. unplug external monitor (clean test of internal panel), then:
-sudo supergfxctl -m AsusMuxDgpu && sudo reboot
+sudo bash setup.sh
+```
+Then **log out and back in**. Verify nvidia is compositing:
+```bash
+nvidia-smi | grep kwin_wayland                                   # should be listed
+tr '\0' '\n' < /proc/$(pgrep -x kwin_wayland|head -1)/environ | grep KWIN_DRM
 ```
 
-After reboot:
-- **Screen works** → `sudo touch /run/dgpu-keep` (within 5 min), then `sudo systemctl disable gpu-dgpu-guard.service`.
-- **Black** → wait 5 min (auto-reverts to Hybrid). Or SSH: `ssh oruc@<TAILSCALE_IP>` → `sudo supergfxctl -m Hybrid && sudo reboot`.
-- Then read `/var/log/gpu-dgpu-diag-latest.log`.
+## Trade-off
 
-## Status (2026-06-05)
+NVIDIA composites everything, so the dGPU never RTD3-sleeps: smooth always, ~a few watts more, worse battery when undocked (plus a reverse iGPU copy for the internal panel). To make it relax to the iGPU when no external display is attached, see the "only when docked" note at the top of `kwin-nvidia-primary.sh`.
 
-- **Hybrid + prime-run** = daily driver. External-monitor lag fixed via nvidia-primary compositing.
-- **dGPU-only (AsusMuxDgpu)** = black internal panel under Wayland in all prior tests — BUT those used a two-card `KWIN_DRM_DEVICES`; the **nvidia-only** config (now in the script) was never actually booted. That's the current experiment.
-- Ruled out: `color_pipeline=0`, HDR/WCG off, backlight (nvidia_0 reads max).
+## Not done (by design)
 
-See `rog-laptop-gpu-reference.md` for the full picture.
+- **dGPU-only (`AsusMuxDgpu`) mode** — black-screens the internal panel under Wayland. Confirmed dead-end with full DRM evidence (the atomic modeset is perfect, the panel still never lights; X11 works, Wayland doesn't). Details in the reference doc. Stay Hybrid.
+- **Manual per-session nvidia picker** — dropped in favour of this automatic persistent setup.
 
 ## License
-
-MIT — see `LICENSE`. Reuse freely; no warranty (these scripts flip GPU MUX state and reboot — read before running on other hardware).
+MIT — see `LICENSE`. These scripts write per-user `environment.d`; read before running on other hardware.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Composite KWin on the NVIDIA dGPU (set KWIN_DRM_DEVICES before login)
+After=supergfxd.service
+Before=plasmalogin.service sddm.service display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/kwin-nvidia-primary.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
