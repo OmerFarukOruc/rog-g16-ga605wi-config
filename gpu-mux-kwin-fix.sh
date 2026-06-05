@@ -36,9 +36,13 @@ fi
 MUX_MODE=$(cat "$MUX_MODE_FILE")
 
 # Read current supergfxctl mode (live first, persisted config as fallback).
+# timeout 5: supergfxctl talks to supergfxd over DBus, and during early boot
+# the daemon can land in a "no dGPU handle" branch where the DBus call never
+# returns. Without a timeout this oneshot hangs forever and blocks
+# multi-user.target -> plasmalogin never starts -> black screen.
 SUPERGFX_MODE=""
 if command -v supergfxctl >/dev/null 2>&1; then
-    SUPERGFX_MODE=$(supergfxctl --get 2>/dev/null | head -n1 | tr -d '[:space:]')
+    SUPERGFX_MODE=$(timeout 5 supergfxctl --get 2>/dev/null | head -n1 | tr -d '[:space:]')
 fi
 if [ -z "$SUPERGFX_MODE" ] && [ -f /etc/supergfxd.conf ]; then
     SUPERGFX_MODE=$(grep -oP '"mode"\s*:\s*"\K[^"]+' /etc/supergfxd.conf)
