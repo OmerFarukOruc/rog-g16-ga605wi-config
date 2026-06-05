@@ -7,7 +7,8 @@ SRC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 echo "== remove old dGPU test harness (dedicated-mode is a dead end on this laptop) =="
 systemctl disable --now gpu-dgpu-guard.service 2>/dev/null || true
 systemctl disable --now gpu-mux-kwin-fix.service 2>/dev/null || true
-rm -f /usr/local/bin/gpu-dgpu-guard.sh /usr/local/bin/gpu-dgpu-diag.sh /usr/local/bin/gpu-mux-kwin-fix.sh
+rm -f /usr/local/bin/gpu-dgpu-guard.sh /usr/local/bin/gpu-dgpu-diag.sh
+rm -f /usr/local/bin/gpu-mux-kwin-fix.sh /usr/local/bin/gpu-mux-kwin-fix.sh.*   # base + .before-debug/.orig-* backups
 rm -f /etc/systemd/system/gpu-dgpu-guard.service /etc/systemd/system/gpu-mux-kwin-fix.service
 rm -f /var/log/gpu-dgpu-diag-latest.log
 
