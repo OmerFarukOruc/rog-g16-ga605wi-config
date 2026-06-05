@@ -91,6 +91,8 @@ configure_user() {
     local username="$2"
     local env_dir="$user_home/.config/environment.d"
     local env_file="$env_dir/kwin-drm.conf"
+    local user_group
+    user_group=$(id -gn "$username" 2>/dev/null || printf '%s' "$username")
 
     if [ "$MUX_MODE" = "0" ]; then
         # dGPU MUX mode: NVIDIA only (single card; avoids KWin choking on the AMD card).
@@ -98,7 +100,7 @@ configure_user() {
             echo "gpu-mux-kwin-fix: dGPU mode - setting KWIN_DRM_DEVICES=$NVIDIA_CARD for $username"
             mkdir -p "$env_dir"
             echo "KWIN_DRM_DEVICES=$NVIDIA_CARD" > "$env_file"
-            chown "$username:$username" "$env_dir" "$env_file" 2>/dev/null
+            chown "$username:$user_group" "$env_dir" "$env_file" 2>/dev/null
         else
             echo "gpu-mux-kwin-fix: dGPU mode - NVIDIA card not found, removing override for $username"
             rm -f "$env_file"
@@ -109,7 +111,7 @@ configure_user() {
             echo "gpu-mux-kwin-fix: Integrated mode - setting KWIN_DRM_DEVICES=$AMD_CARD for $username"
             mkdir -p "$env_dir"
             echo "KWIN_DRM_DEVICES=$AMD_CARD" > "$env_file"
-            chown "$username:$username" "$env_dir" "$env_file" 2>/dev/null
+            chown "$username:$user_group" "$env_dir" "$env_file" 2>/dev/null
         else
             echo "gpu-mux-kwin-fix: Integrated mode - no AMD card found, removing override for $username"
             rm -f "$env_file"
@@ -119,7 +121,7 @@ configure_user() {
         echo "gpu-mux-kwin-fix: Hybrid + ext display on NVIDIA - setting KWIN_DRM_DEVICES=$NVIDIA_CARD:$AMD_CARD for $username"
         mkdir -p "$env_dir"
         printf 'KWIN_DRM_DEVICES=%s:%s\nKWIN_DRM_ALLOW_NVIDIA_COLORSPACE=1\n' "$NVIDIA_CARD" "$AMD_CARD" > "$env_file"
-        chown "$username:$username" "$env_dir" "$env_file" 2>/dev/null
+        chown "$username:$user_group" "$env_dir" "$env_file" 2>/dev/null
     else
         # Hybrid, internal panel only: let KWin auto-detect on AMD so RTD3 can sleep the dGPU.
         if [ -f "$env_file" ]; then

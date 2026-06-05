@@ -37,3 +37,7 @@ After reboot:
 - Ruled out: `color_pipeline=0`, HDR/WCG off, backlight (nvidia_0 reads max).
 
 See `rog-laptop-gpu-reference.md` for the full picture.
+
+## License
+
+MIT — see `LICENSE`. Reuse freely; no warranty (these scripts flip GPU MUX state and reboot — read before running on other hardware).
