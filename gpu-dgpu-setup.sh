@@ -1,7 +1,7 @@
 #!/bin/bash
 # Installs the hardened KWin DRM script + the dGPU-test safety harness.
 # Source of truth = this script's own directory, so run it from wherever the repo lives:
-#   sudo bash /home/oruc/Documents/rog-g16-gpu/gpu-dgpu-setup.sh
+#   sudo bash ./gpu-dgpu-setup.sh
 set -e
 
 SRC="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
