@@ -170,6 +170,7 @@ sudo supergfxctl -m AsusMuxDgpu && sudo reboot   # will black-screen; recover vi
 - **LTS kernel 6.18.33-2-cachyos-lts** in dGPU mode — retested 2026-06-05; identical behaviour. Not a 7.0-kernel regression.
 - **Boot-script hang on `supergfxctl --get`** (separate bug that masked the real symptom in pre-2026-06-05 reproductions; `multi-user.target` was wedged so KWin never started) — fixed in commit 956b292 (`timeout 5` wrapper). With the fix, every dGPU boot now reaches `graphical.target` cleanly and `gpu-dgpu-guard` actually fires.
 - **"KWin never presents" hypothesis** — **disproved 2026-06-05** with verbose KWin logging (`QT_LOGGING_RULES=kwin.*=true;qt.qpa.*=true` + `WAYLAND_DEBUG=server` injected into the boot script's MUX=0 branch). KWin runs the full pipeline.
+- **`KWIN_FORCE_SW_CURSOR=1`** (hardware-cursor regression suspicion, from KDE Bug 517987 / Arch BBS 310531) — disproved 2026-06-05. With SW cursor set, DRM debugfs confirms cursor plane[58] detaches (`crtc=(null), fb=0`) and only the primary plane[53] (2560×1600 ABGR2101010) stays attached to crtc-0. Panel is still black. So hardware-cursor / multi-GPU GL-framebuffer regression from 517987 is not the cause on this path — that was a different upstream bug already fixed in 6.6.5.
 
 ### What KWin actually does in dGPU mode (verbose-logged, 2026-06-05)
 
