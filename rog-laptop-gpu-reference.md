@@ -159,22 +159,48 @@ sudo supergfxctl -m AsusMuxDgpu && sudo reboot   # will black-screen; recover vi
 
 ## Resolved: dGPU-only Mode Black Screen Under Wayland
 
-**Status: confirmed dead-end, all in-config hypotheses exhausted. Do not re-investigate.** In `AsusMuxDgpu` the internal eDP is hardware-MUXed to the NVIDIA GPU (`eDP-1` or `eDP-2` on the nvidia card, depending on kernel enumeration order). KWin + greeter start, but **no Wayland compositor lights the panel** — blank with a blinking top-left cursor. Reproduced ~10× across two kernels and the boot-script-hang fix. **X11 works; Wayland does not**, compositor-independent (KWin/Sway/Hyprland).
+**Status: bug is in nvidia-open 610's eDP scanout layer for Ada Mobile, below the compositor.** Userspace is fully exonerated. In `AsusMuxDgpu` the internal eDP is hardware-MUXed to the NVIDIA GPU. KWin completes a clean modeset, attaches a 2560×1600 10-bit framebuffer to a CRTC, allocates planes, processes Wayland clients — and the panel stays dark anyway. **X11 works; Wayland does not**, compositor-independent (KWin/Sway/Hyprland), kernel-independent (cachyos 7.0 + LTS 6.18). Reproduced on multiple GA605WI machines including [kiia.ione](https://discuss.cachyos.org/t/trying-to-solve-hybrid-gpu-problem-for-asus-amd-nvidia-laptops/17935): "switching the BIOS GPU mode to dGPU Only results in the internal display going completely blank, showing only a blinking cursor in the top-left corner. ... I also tested the linux-g14 kernel ... but the problem remained."
 
 **Ruled out empirically (do NOT re-chase):**
 - **`color_pipeline=0`** — confirmed active (sysfs `N`, in initramfs); still black.
 - **HDR + Wide Color Gamut OFF** with `color_pipeline=0` = zero colour management; still black. → colour/HDR conclusively NOT the cause despite matching the 610 release-note wording.
 - Boot script ran, `KWIN_DRM_DEVICES` set, `fbdev=1`, simpledrm unbound — all verified correct.
 - asusd per-profile tunings — unrelated.
-- **NVIDIA-only `KWIN_DRM_DEVICES`** (boot script's MUX=0 branch, dropping the AMD card) — retested 2026-06-05 on kernel 7.0; same `Accepting client connections` → silence. AMD card was not the trigger.
-- **LTS kernel 6.18.33-2-cachyos-lts** in dGPU mode — retested 2026-06-05; **identical KWin behaviour** at 14:34:12: `Accepting client connections`, no further log lines, panel black with backlight 100/100 and `card1-eDP-2 connected`. Not a 7.0-kernel regression.
-- **Boot-script hang on `supergfxctl --get`** (separate issue, caused the previous "black screen" reproductions to actually be `multi-user.target` wedged) — fixed in commit 956b292 (`timeout 5` wrapper). With the fix, the boot reaches `graphical.target` cleanly and the gpu-dgpu-guard now actually fires.
+- **NVIDIA-only `KWIN_DRM_DEVICES`** (boot script's MUX=0 branch, dropping the AMD card) — retested 2026-06-05 on kernel 7.0; same black screen. AMD card was not the trigger.
+- **LTS kernel 6.18.33-2-cachyos-lts** in dGPU mode — retested 2026-06-05; identical behaviour. Not a 7.0-kernel regression.
+- **Boot-script hang on `supergfxctl --get`** (separate bug that masked the real symptom in pre-2026-06-05 reproductions; `multi-user.target` was wedged so KWin never started) — fixed in commit 956b292 (`timeout 5` wrapper). With the fix, every dGPU boot now reaches `graphical.target` cleanly and `gpu-dgpu-guard` actually fires.
+- **"KWin never presents" hypothesis** — **disproved 2026-06-05** with verbose KWin logging (`QT_LOGGING_RULES=kwin.*=true;qt.qpa.*=true` + `WAYLAND_DEBUG=server` injected into the boot script's MUX=0 branch). KWin runs the full pipeline.
 
-**Captured KWin verdict (both kernels, 2026-06-05):** identical pattern — `No backend specified, automatically choosing drm` → `Accepting client connections on sockets: QList("wayland-0")` → **silence for ≥90 s while panel is black, backlight on, eDP connector reads `connected`**. No DRM errors. No modeset attempt visible in `_COMM=kwin_wayland`. KWin is up but never commits an atomic modeset. This is the upstream symptom — not a configuration bug.
+### What KWin actually does in dGPU mode (verbose-logged, 2026-06-05)
 
-**Conclusion:** every in-config knob and both available kernels are exhausted. The remaining variables are **nvidia-open driver version** (610.43.02 tested; downgrade to 580 / 555 untested) and **KWin/Plasma version** (6.6.5 tested; older or git-master untested). At this point it should be filed upstream rather than re-investigated locally:
-- KDE Bugzilla: KWin/Wayland compositor never presents on NVIDIA-only laptop output with eDP MUXed to dGPU.
-- NVIDIA Linux forum: nvidia-open 610 + KWin Wayland on Ada Mobile + eDP-only output produces no modeset commit.
+- `kwin_wayland` journal grows from **5 lines to 12,450 lines** of normal Wayland traffic.
+- **Zero** error / warning / fail / cannot / denied / atomic-commit-failed lines anywhere in the verbose log.
+- Wayland clients (plasmashell, panel widgets, splash) connect, register globals (`wp_color_manager_v1`, `wp_presentation`, `kde_output_management_v2`, `linux_drm_syncobj`, …), commit surfaces, and receive frame callbacks.
+- DRM state in `/sys/kernel/debug/dri/0000:65:00.0/state` shows:
+  - `CRTCs: 64 fb=145 pos=(0,0) size=(2560x1600)` — CRTC active.
+  - `plane[53] crtc=crtc-0 fb=150 size=2560x1600 format=AB30 (ABGR2101010) allocated by kwin_wayland` — 10-bit framebuffer attached.
+  - `plane[58] crtc=crtc-0 fb=144 size=256x256 format=AR24` — cursor plane attached.
+  - `GAMMA_LUT` populated (1024-entry blob), `DEGAMMA_LUT` populated.
+  - `VRR_ENABLED=0`, `NV_CRTC_REGAMMA_TF=Default`.
+- `modetest -M nvidia-drm` reports `eDP-1: connected, 2560x1600@240`, encoder 136 bound to CRTC 64.
+- `nvidia-smi` reports **GPU-Util 100 %**, **629 MiB** memory used, `Disp.A: On`.
+- Kernel journal shows nvidia-drm loaded cleanly, `fbcon: nvidia-drmdrmfb (fb0) is primary device`, no NVRM/nvidia errors.
+- Backlight `nvidia_0: brightness=100/100, bl_power=0`.
+
+Everything in software thinks scanout is happening normally. The panel just doesn't show the signal.
+
+### What's actually broken
+
+The bug is in the hardware-to-panel path that the open NVIDIA 610 driver controls on this hardware combination — eDP link training, PSR sequencing, panel power-state handoff after MUX switch, or a similar low-level eDP topic. Indicators worth carrying into the upstream bug report:
+- The plane state shows `color-encoding=ITU-R BT.709 YCbCr` and `color-range=YCbCr full range` even though the framebuffer is RGB (`AB30 = ABGR2101010`). On an eDP laptop panel this is unusual and may be cosmetic (NVIDIA-internal property), but worth flagging.
+- All AMD-side eDP connectors (`amdgpu` log lines) report `PSR support 0, DC PSR ver -1` — so the panel itself doesn't advertise PSR to amdgpu. But amdgpu doesn't drive the panel in dGPU mode; whether nvidia-open agrees on PSR state is unknown.
+- The panel is high-spec (Samsung SDC, 2560×1600 @ 240 Hz, HDR). It may want a specific eDP DPCD wake sequence after MUX hand-off that nvidia-open doesn't issue.
+
+### Where to file
+
+- **NVIDIA Linux Open GPU Kernel Modules** issue tracker (https://github.com/NVIDIA/open-gpu-kernel-modules/issues). Use the dGPU-debug evidence above (verbose KWin log shows everything is fine in userspace; nvidia driver-only modeset succeeds; panel stays dark). Reference the two other GA605WI reproductions to establish it's not one-off hardware.
+- **CachyOS / asus-linux** forums for any model-specific workaround (eDP DPCD quirks, link-rate clamps, PSR disable). The CachyOS thread already has one other GA605WI reproduction.
+- **KDE Bugzilla is no longer the right venue** — KWin is doing everything correctly per the verbose log; an upstream KWin bug would be the wrong destination.
 
 **Why no standard tool does this:** the supported answer is "don't MUX-switch on Wayland — stay Hybrid + prime-run." `supergfxctl`/`asusctl` flip the MUX only; `switcheroo-control` does per-app offload; KWin auto-detects in Hybrid. The per-mode `KWIN_DRM_DEVICES` automation (this script) fills a gap for an unsupported edge case.
 
